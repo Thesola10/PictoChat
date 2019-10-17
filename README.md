@@ -10,7 +10,7 @@ The `pctt` library (PictoChat Text Toolkit) allows recognition and exchange of p
 This project not being ready for release yet, there is no official build toolchain for the moment.
 
 ## Why it exists
-A while ago, a piece of software called `pictosniff` was created, which allowed users to decode incoming PictoChat messages, but not to interact with them. This library re-uses code from `pictosniff`, which is courtesy of Sebastien Bourdeauducq under the GNU GPL.
+A while ago, a piece of software called [`pictosniff`](https://web.archive.org/web/20070630075933/lekernel.lya-fr.com/pictosniff.html) was created, which allowed users to decode incoming PictoChat messages, but not to interact with them. This library re-uses code from `pictosniff`, which is courtesy of Sebastien Bourdeauducq under the GNU GPL.
 
 ## Where I can get a Prism54 WiFi adapter
 ~~The official Nintendo USB WiFi adapter is powered by the Prism54 chipset, the same which can be found inside of a Nintendo DS, DSi and 3DS.~~
