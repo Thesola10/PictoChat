@@ -1,14 +1,14 @@
 /*
-  Copyright 2005 Sebastien Bourdeauducq
+  Copyright (C) 2005 Sebastien Bourdeauducq
 
   This file is part of PictoSniff.
 
-  prism54u-bsd is free software; you can redistribute it and/or modify
+  PictoSniff is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation; either version 2 of the License, or
   (at your option) any later version.
 
-  prism54u-bsd is distributed in the hope that it will be useful,
+  PictoSniff is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
   GNU General Public License for more details.
@@ -36,6 +36,11 @@
 #define MAX_PACKETS_PER_MESSAGE 512
 
 #define MAX_PACKET_LEN 1024
+
+const char nintendo_mac_address_prefix[3] = { 0x00, 0x09, 0xbf };
+
+/* Number of packets to take into account for average RSSI */
+#define RSSI_PACKET_COUNT 40
 
 struct pictochat_packet {
   uint8_t payload_size;
@@ -66,7 +71,7 @@ static int decode_chunk(char *im, char *raw, int *at, int chunkx, int chunky, in
   return 1;
 }
 
-static int display_message(const char *macaddr, const struct pictochat_packet *packets, unsigned int packet_count)
+static int display_message(const struct pictochat_packet *packets, unsigned int packet_count)
 {
   unsigned int i, j, k;
   unsigned int blocks, width, height;
@@ -86,10 +91,8 @@ static int display_message(const char *macaddr, const struct pictochat_packet *p
   im = malloc(width*height*3);
   if(im == NULL) return 0;
   memset(im, 0xff, width*height*3);
-  
   raw = malloc((j+1)*PICTOCHAT_NORMAL_PAYLOAD);
   if(raw == NULL) return 0;
-  
   j = 0;
   memcpy(raw, packets[0].payload_and_sequence, PICTOCHAT_NORMAL_PAYLOAD);
   for(i=1;i<packet_count;i++) {
@@ -107,83 +110,99 @@ static int display_message(const char *macaddr, const struct pictochat_packet *p
   }
   
   free(raw);
-  add_message(im, macaddr, width, height);
+  add_message(im, width, height);
   return 1;
 }
 
+static pcap_t *pcap_source;
 static int terminate_thread = 0;
 
-static int sniff_message(pcap_t *source)
+static int rssi_levels[RSSI_PACKET_COUNT];
+static int rssi_ptr = 0;
+
+static struct pictochat_packet *packets;
+
+static void *sniff_thread(void *arg)
 {
   const unsigned char *packet_data;
   struct pcap_pkthdr packet_header;
-  struct pictochat_packet *packets;
   int message_started;
-  unsigned int i;
+  unsigned int i, j, k;
   unsigned int former_byte_counter;
   int seen_packets;
-  char message_macaddr[ETHER_ADDR_LEN];
   
-  packets = malloc((MAX_PACKETS_PER_MESSAGE+1)*sizeof(*packets));
-  if(packets == NULL) return 0;
   message_started = 0;
   former_byte_counter = 0;
   seen_packets = 0;
+  i = 0;
   while(1) {
-    packet_data = pcap_next(source, &packet_header);
+    packet_data = pcap_next(pcap_source, &packet_header);
     if(packet_data == NULL) {
-      if(terminate_thread) return 1;
+      if(terminate_thread) return NULL;
       if((!seen_packets) && message_started) {
-	display_message(&message_macaddr[0], &packets[0], i-1);
-	message_started = 0;
-	former_byte_counter = 0;
-	seen_packets = 0;
-	i = 0;
+        display_message(&packets[0], i-1);
+        message_started = 0;
+        former_byte_counter = 0;
+        seen_packets = 0;
+        i = 0;
       }
       seen_packets = 0;
       continue;
     }
-    if(packet_header.len == 270) {
-      if(*(packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET) == PICTOCHAT_NORMAL_PAYLOAD) {
-	memcpy(&message_macaddr[0], packet_data+RADIOTAP_OFFSET+10, ETHER_ADDR_LEN);
-	seen_packets = 1;
-	if(!message_started) {
-	  message_started = 1;
-	  i = 0;
-	} else {
-	  i++;
-	}
-	if(i == MAX_PACKETS_PER_MESSAGE) {
-	  fputs("too many packets in message\n", stderr);
-	  free(packets);
-	  return 0;
-	}
-	memset(&packets[i], 0, sizeof(struct pictochat_packet));
-	memcpy(&packets[i], packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET, sizeof(struct pictochat_packet)-PICTOCHAT_MAX_PAYLOAD+PICTOCHAT_NORMAL_PAYLOAD+4);
-	if(packets[i].byte_counter < former_byte_counter) {
-	  message_started = 1;
-	  display_message(&message_macaddr[0], &packets[0], i-1);
-	  memcpy(&packets[0], packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET, sizeof(struct pictochat_packet)-PICTOCHAT_MAX_PAYLOAD+PICTOCHAT_NORMAL_PAYLOAD+4);
-	  i = 0;
-	}
-	former_byte_counter = packets[i].byte_counter;
+    /* Check for Nintendo DS MAC address */
+    if(memcmp(packet_data+RADIOTAP_OFFSET+10, &nintendo_mac_address_prefix, sizeof(nintendo_mac_address_prefix)) == 0) {
+      /* We always update the RSSI in this case, taking into account NDS beacons */
+      rssi_levels[rssi_ptr] = *(packet_data+13);
+      rssi_ptr++;
+      if(rssi_ptr == RSSI_PACKET_COUNT) {
+        j = 0;
+        for(k=0;k<RSSI_PACKET_COUNT;k++) j += rssi_levels[k];
+        update_rssi(j/RSSI_PACKET_COUNT);
+        rssi_ptr = 0;
+      }
+      /* Check for PictoChat message packet length */
+      if(packet_header.len == 270) {
+        /* Check for PictoChat message payload length (inside Nintendo DS protocol) */
+        /* there muse be a more reliable way to detect PictoChat messages ... */
+        if(*(packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET) == PICTOCHAT_NORMAL_PAYLOAD) {
+          seen_packets = 1;
+          if(!message_started) {
+            message_started = 1;
+            i = 0;
+          } else {
+            i++;
+          }
+          if(i == MAX_PACKETS_PER_MESSAGE) {
+            fputs("too many packets in message\n", stderr);
+            return 0;
+          }
+          memset(&packets[i], 0, sizeof(struct pictochat_packet));
+          memcpy(&packets[i], packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET, sizeof(struct pictochat_packet)-PICTOCHAT_MAX_PAYLOAD+PICTOCHAT_NORMAL_PAYLOAD+4);
+          if(packets[i].byte_counter < former_byte_counter) {
+            message_started = 1;
+            display_message(&packets[0], i-1);
+            memcpy(&packets[0], packet_data+RADIOTAP_OFFSET+PICTOCHAT_OFFSET, sizeof(struct pictochat_packet)-PICTOCHAT_MAX_PAYLOAD+PICTOCHAT_NORMAL_PAYLOAD+4);
+            i = 0;
+          }
+          former_byte_counter = packets[i].byte_counter;
+        }
       }
     }
   }
-  free(packets);
-  return 1;
+  return NULL;
 }
 
-static void *sniff_thread(void *arg)
+static pthread_t threadid;
+
+int start_sniffing(const char *iface)
 {
-  pcap_t *pcap_source;
   char pcap_errbuf[PCAP_ERRBUF_SIZE];
   int *id;
-  
-  pcap_source = pcap_open_live("p54u0", MAX_PACKET_LEN, 1, 100, &pcap_errbuf[0]);
+
+  pcap_source = pcap_open_live(iface, MAX_PACKET_LEN, 1, 100, &pcap_errbuf[0]);
   if(pcap_source == NULL) {
     fprintf(stderr, "pcap_open_live() failed : %s\n", &pcap_errbuf[0]);
-    return NULL;
+    return 0;
   }
   pcap_list_datalinks(pcap_source, &id);
   while(*id != 0) {
@@ -191,20 +210,19 @@ static void *sniff_thread(void *arg)
     id++;
   }
   if(*id == 0) {
-    fputs("Paye ton radiotap\n", stderr);
-    return NULL;
+    fputs("Radiotap not available\n", stderr);
+    return 0;
+  }
+  packets = malloc((MAX_PACKETS_PER_MESSAGE+1)*sizeof(*packets));
+  if(packets == NULL) {
+    perror("malloc");
+    return 0;
   }
   pcap_set_datalink(pcap_source, *id);
-  sniff_message(pcap_source);
-  pcap_close(pcap_source);
-  return NULL;
-}
-
-static pthread_t threadid;
-
-int start_sniffing()
-{
-  if(pthread_create(&threadid, NULL, sniff_thread, NULL) != 0) return 0;
+  if(pthread_create(&threadid, NULL, sniff_thread, NULL) != 0) {
+    perror("pthread_create");
+    return 0;
+  }
   return 1;
 }
 
@@ -212,5 +230,7 @@ int end_sniffing()
 {
   terminate_thread = 1;
   pthread_join(threadid, NULL);
+  pcap_close(pcap_source);
+  free(packets);
   return 1;
 }
