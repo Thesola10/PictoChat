@@ -15,3 +15,13 @@ A while ago, a piece of software called [`pictosniff`](https://web.archive.org/w
 ## Where I can get a Prism54 WiFi adapter
 ~~The official Nintendo USB WiFi adapter is powered by the Prism54 chipset, the same which can be found inside of a Nintendo DS, DSi and 3DS.~~
 Should be easy enough to find by looking for "Prism54" on Amazon. Bought an official Nintendo USB WiFi adapter and realized I'm a dunce and it, in fact, _can't_ sniff PictoChat packets. Development is paused until I decide to buy another Prism54 dongle and actually test things out. 🤦‍♂️
+
+## Starting point for contributing
+
+If you want to participate to the development of PCPA, you will need the following things:
+
+* A Nintendo DS/DSi/3DS with PictoChat (duh)
+* A PC with Linux 4.18 or more recent
+* A Prism54 WiFi adapter
+* Wireshark, or any other packet sniffing tool
+* A recent version of the `gcc` C compiler
